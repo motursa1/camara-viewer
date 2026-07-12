@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:use_controller="false"
+        app:resize_mode="fit" />
+
+    <!-- Indicador de estado / reconectando, discreto, arriba a la izquierda -->
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="16dp"
+        android:textColor="#FFFFFF"
+        android:background="#66000000"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:text="Conectando..."
+        android:textSize="12sp" />
+
+    <!-- Botón discreto para ir a grabaciones, esquina inferior derecha -->
+    <ImageButton
+        android:id="@+id/btnRecordings"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="16dp"
+        android:background="#66000000"
+        android:src="@android:drawable/ic_menu_recent_history"
+        android:contentDescription="Ver grabaciones" />
+
+</FrameLayout>
