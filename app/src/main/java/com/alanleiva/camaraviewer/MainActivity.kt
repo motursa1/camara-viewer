@@ -1,5 +1,6 @@
 package com.alanleiva.camaraviewer
 
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private val CHECK_INTERVAL_MS = 5000L
     private val MAX_STALLED_CHECKS_BEFORE_RESTART = 2
     private val RECONNECT_DELAY_MS = 3000L
+    private var watchdogRunning = false
 
     private val watchdogRunnable = object : Runnable {
         override fun run() {
@@ -41,13 +43,19 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         hideSystemBars()
+        setVolumeToMax()
 
         binding.btnRecordings.setOnClickListener {
             startActivity(android.content.Intent(this, RecordingsActivity::class.java))
         }
+    }
 
-        startPlayer()
-        mainHandler.postDelayed(watchdogRunnable, CHECK_INTERVAL_MS)
+    private fun setVolumeToMax() {
+        // Sube el volumen del stream de música al máximo posible del dispositivo
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+        volumeControlStream = AudioManager.STREAM_MUSIC
     }
 
     private fun hideSystemBars() {
@@ -76,16 +84,9 @@ class MainActivity : AppCompatActivity() {
         return "rtsp://$auth$ip:$port/$path"
     }
 
-    // Buffer mínimo: prioriza latencia baja sobre fluidez perfecta.
-    // Si notas cortes/tartamudeo con esto, sube un poco estos valores.
     private fun buildLowLatencyLoadControl(): DefaultLoadControl {
         return DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                300,   // minBufferMs
-                1000,  // maxBufferMs
-                150,   // bufferForPlaybackMs
-                300    // bufferForPlaybackAfterRebufferMs
-            )
+            .setBufferDurationsMs(300, 1000, 150, 300)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
     }
@@ -107,6 +108,7 @@ class MainActivity : AppCompatActivity() {
         exoPlayer.setMediaSource(mediaSource)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+        exoPlayer.volume = 1.0f
 
         exoPlayer.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -139,9 +141,7 @@ class MainActivity : AppCompatActivity() {
         if (playbackState == Player.STATE_READY && p.playWhenReady) {
             if (currentPosition == lastCheckedPosition) {
                 stalledChecks++
-                Log.w("CamaraViewer", "Posible congelamiento detectado ($stalledChecks/$MAX_STALLED_CHECKS_BEFORE_RESTART)")
                 if (stalledChecks >= MAX_STALLED_CHECKS_BEFORE_RESTART) {
-                    Log.w("CamaraViewer", "Imagen congelada confirmada, reiniciando reproductor")
                     setStatus("Reconectando...")
                     scheduleReconnect()
                     return
@@ -163,21 +163,45 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
     }
 
+    private fun startWatchdog() {
+        if (!watchdogRunning) {
+            watchdogRunning = true
+            mainHandler.postDelayed(watchdogRunnable, CHECK_INTERVAL_MS)
+        }
+    }
+
+    private fun stopWatchdog() {
+        watchdogRunning = false
+        mainHandler.removeCallbacks(watchdogRunnable)
+    }
+
     private fun releasePlayer() {
         player?.release()
         player = null
     }
 
-    override fun onResume() {
-        super.onResume()
-        if (player == null) {
-            startPlayer()
-        }
+    // --- Ciclo de vida: se detiene por completo al salir de pantalla ---
+    // Esto cubre tanto el botón "atrás" como el botón "home" o cambiar de app:
+    // en cualquier caso, se libera el reproductor y deja de consumir datos/audio.
+
+    override fun onStart() {
+        super.onStart()
+        setVolumeToMax()
+        startPlayer()
+        startWatchdog()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        mainHandler.removeCallbacks(watchdogRunnable)
+    override fun onStop() {
+        super.onStop()
+        stopWatchdog()
         releasePlayer()
+    }
+
+    override fun onBackPressed() {
+        // Libera todo explícitamente y cierra la app por completo,
+        // sin dejarla viva en segundo plano ni en la lista de recientes.
+        stopWatchdog()
+        releasePlayer()
+        finishAndRemoveTask()
     }
 }
