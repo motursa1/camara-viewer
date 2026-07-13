@@ -10,7 +10,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:use_controller="false"
-        app:resize_mode="fit" />
+        app:resize_mode="zoom" />
 
     <!-- Indicador de estado / reconectando, discreto, arriba a la izquierda -->
     <TextView
