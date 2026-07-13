@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.alanleiva.camaraviewer.databinding.ActivityMainBinding
@@ -21,13 +22,10 @@ class MainActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // --- Watchdog anti-congelamiento ---
-    // Revisa cada CHECK_INTERVAL_MS si la posición de reproducción avanzó.
-    // Si no avanzó (imagen congelada) o hubo error, recrea el reproductor.
     private var lastCheckedPosition = -1L
     private var stalledChecks = 0
     private val CHECK_INTERVAL_MS = 5000L
-    private val MAX_STALLED_CHECKS_BEFORE_RESTART = 2 // ~10s congelado -> reinicia
+    private val MAX_STALLED_CHECKS_BEFORE_RESTART = 2
     private val RECONNECT_DELAY_MS = 3000L
 
     private val watchdogRunnable = object : Runnable {
@@ -78,17 +76,32 @@ class MainActivity : AppCompatActivity() {
         return "rtsp://$auth$ip:$port/$path"
     }
 
+    // Buffer mínimo: prioriza latencia baja sobre fluidez perfecta.
+    // Si notas cortes/tartamudeo con esto, sube un poco estos valores.
+    private fun buildLowLatencyLoadControl(): DefaultLoadControl {
+        return DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                300,   // minBufferMs
+                1000,  // maxBufferMs
+                150,   // bufferForPlaybackMs
+                300    // bufferForPlaybackAfterRebufferMs
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+    }
+
     private fun startPlayer() {
         releasePlayer()
-
         setStatus("Conectando...")
 
-        val exoPlayer = ExoPlayer.Builder(this).build()
+        val exoPlayer = ExoPlayer.Builder(this)
+            .setLoadControl(buildLowLatencyLoadControl())
+            .build()
         player = exoPlayer
         binding.playerView.player = exoPlayer
 
         val mediaSource = RtspMediaSource.Factory()
-            .setForceUseRtpTcp(true) // TCP es más estable sobre VPN/Tailscale que UDP
+            .setForceUseRtpTcp(true)
             .createMediaSource(MediaItem.fromUri(buildRtspUrl()))
 
         exoPlayer.setMediaSource(mediaSource)
@@ -116,14 +129,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkStreamHealth() {
         val p = player ?: return
-
         val playbackState = p.playbackState
         if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
             Log.w("CamaraViewer", "Estado inválido detectado ($playbackState), reiniciando reproductor")
             scheduleReconnect()
             return
         }
-
         val currentPosition = p.currentPosition
         if (playbackState == Player.STATE_READY && p.playWhenReady) {
             if (currentPosition == lastCheckedPosition) {
