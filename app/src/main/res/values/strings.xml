@@ -7,7 +7,7 @@
          Como la cámara no tiene usuario/contraseña configurados,
          camera_user y camera_pass quedan vacíos.
          ================================================================ -->
-    <string name="camera_ip">192.168.1.4</string>
+    <string name="camera_ip">192.168.1.42</string>
     <string name="camera_rtsp_port">554</string>
     <string name="camera_http_port">80</string>
     <string name="camera_stream_path">ch0_0.h264</string>
