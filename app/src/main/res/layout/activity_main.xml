@@ -10,31 +10,34 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:use_controller="false"
-        app:resize_mode="zoom" />
+        app:resize_mode="fit" />
 
-    <!-- Indicador de estado / reconectando, discreto, arriba a la izquierda -->
+    <!-- Estado del stream (solo visible cuando reconecta) -->
     <TextView
-        android:id="@+id/statusText"
+        android:id="@+id/txtEstado"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_margin="16dp"
-        android:textColor="#FFFFFF"
-        android:background="#66000000"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
+        android:layout_gravity="center"
+        android:background="#AA000000"
+        android:padding="16dp"
         android:text="Conectando..."
-        android:textSize="12sp" />
+        android:textColor="#FFFFFF"
+        android:textSize="18sp"
+        android:visibility="gone" />
 
-    <!-- Botón discreto para ir a grabaciones, esquina inferior derecha -->
-    <ImageButton
-        android:id="@+id/btnRecordings"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
+    <!-- BOTON BOOST: cicla NORMAL -> +10 dB -> +20 dB -> +30 dB -> NORMAL -->
+    <Button
+        android:id="@+id/btnBoost"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_margin="16dp"
-        android:background="#66000000"
-        android:src="@android:drawable/ic_menu_recent_history"
-        android:contentDescription="Ver grabaciones" />
+        android:layout_margin="20dp"
+        android:background="#CC1E88E5"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="🔊 NORMAL"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
 </FrameLayout>
