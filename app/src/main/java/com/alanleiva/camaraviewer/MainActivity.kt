@@ -1,34 +1,50 @@
 package com.alanleiva.camaraviewer
 
+import android.content.Context
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
-import android.view.WindowInsets
-import android.view.WindowInsetsController
+import android.view.WindowManager
+import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.alanleiva.camaraviewer.databinding.ActivityMainBinding
 
+@OptIn(UnstableApi::class)
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var player: ExoPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // ================== AUDIO BOOST ==================
+    // LoudnessEnhancer amplifica por software el audio del stream.
+    // El valor va en milibelios (mB): 1000 mB = 10 dB.
+    private var loudness: LoudnessEnhancer? = null
+    private var audioSessionId: Int = 0
+
+    // Niveles del boton: 0 = normal, luego +10, +20, +30 dB
+    private val NIVELES_BOOST = intArrayOf(0, 1000, 2000, 3000)
+    private val ETIQUETAS = arrayOf("🔊 NORMAL", "🔊 +10 dB", "🔊 +20 dB", "🔊 MAX +30 dB")
+    private var nivelActual = 0
+
+    // ================== WATCHDOG ==================
     private var lastCheckedPosition = -1L
     private var stalledChecks = 0
     private val CHECK_INTERVAL_MS = 5000L
-    private val MAX_STALLED_CHECKS_BEFORE_RESTART = 2
+    private val MAX_STALLED_CHECKS_BEFORE_RESTART = 3
     private val RECONNECT_DELAY_MS = 3000L
-    private var watchdogRunning = false
 
     private val watchdogRunnable = object : Runnable {
         override fun run() {
@@ -42,38 +58,51 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        hideSystemBars()
-        setVolumeToMax()
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        binding.btnRecordings.setOnClickListener {
-            startActivity(android.content.Intent(this, RecordingsActivity::class.java))
-        }
+        binding.btnBoost.setOnClickListener { ciclarBoost() }
     }
 
-    private fun setVolumeToMax() {
-        // Sube el volumen del stream de música al máximo posible del dispositivo
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
-        volumeControlStream = AudioManager.STREAM_MUSIC
+    // ---------------------------------------------------------------
+    // BOTON BOOST
+    // ---------------------------------------------------------------
+    private fun ciclarBoost() {
+        nivelActual = (nivelActual + 1) % NIVELES_BOOST.size
+        aplicarBoost()
+        binding.btnBoost.text = ETIQUETAS[nivelActual]
+
+        // Al activar boost, subimos tambien el volumen del sistema al maximo
+        if (nivelActual > 0) subirVolumenSistemaAlMaximo()
     }
 
-    private fun hideSystemBars() {
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            window.insetsController?.let {
-                it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    private fun aplicarBoost() {
+        val gananciaMb = NIVELES_BOOST[nivelActual]
+        try {
+            if (loudness == null && audioSessionId != 0) {
+                loudness = LoudnessEnhancer(audioSessionId)
             }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
+            loudness?.let {
+                it.setTargetGain(gananciaMb)
+                it.enabled = gananciaMb > 0
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo aplicar boost: ${e.message}")
         }
     }
 
+    private fun subirVolumenSistemaAlMaximo() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, max, 0)
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo subir volumen: ${e.message}")
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // PLAYER
+    // ---------------------------------------------------------------
     private fun buildRtspUrl(): String {
         val ip = getString(R.string.camera_ip)
         val port = getString(R.string.camera_rtsp_port)
@@ -84,46 +113,68 @@ class MainActivity : AppCompatActivity() {
         return "rtsp://$auth$ip:$port/$path"
     }
 
-    private fun buildLowLatencyLoadControl(): DefaultLoadControl {
-        return DefaultLoadControl.Builder()
-            .setBufferDurationsMs(300, 1000, 150, 300)
+    private fun initializePlayer() {
+        releasePlayer()
+
+        // ---- BUFFER ANTI-MICROCORTES ----
+        // Estos valores son la clave contra los congelamientos de 1-2 segundos.
+        // minBuffer 4s / maxBuffer 12s: hay reserva suficiente para cubrir
+        // un hueco del encoder de la camara sin que la imagen se detenga.
+        // bufferForPlayback 2000ms = latencia inicial de ~2s (aceptable en vigilancia).
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                4000,   // minBufferMs
+                12000,  // maxBufferMs
+                2000,   // bufferForPlaybackMs
+                3000    // bufferForPlaybackAfterRebufferMs
+            )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
-    }
 
-    private fun startPlayer() {
-        releasePlayer()
-        setStatus("Conectando...")
-
-        val exoPlayer = ExoPlayer.Builder(this)
-            .setLoadControl(buildLowLatencyLoadControl())
-            .build()
-        player = exoPlayer
-        binding.playerView.player = exoPlayer
+        // Sesion de audio propia y estable: sin esto el LoudnessEnhancer
+        // se pierde cada vez que el reproductor se recrea.
+        if (audioSessionId == 0) {
+            audioSessionId = Util.generateAudioSessionIdV21(this)
+        }
 
         val mediaSource = RtspMediaSource.Factory()
             .setForceUseRtpTcp(true)
+            .setTimeoutMs(8000)
             .createMediaSource(MediaItem.fromUri(buildRtspUrl()))
 
-        exoPlayer.setMediaSource(mediaSource)
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
-        exoPlayer.volume = 1.0f
+        val exo = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .build()
 
-        exoPlayer.addListener(object : Player.Listener {
+        exo.setAudioSessionId(audioSessionId)
+        exo.setMediaSource(mediaSource)
+        exo.playWhenReady = true
+        exo.volume = 1.0f
+
+        exo.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG, "Error de reproduccion: ${error.errorCodeName}")
+                mostrarEstado("Reconectando...")
+                mainHandler.postDelayed({ initializePlayer() }, RECONNECT_DELAY_MS)
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
-                    Player.STATE_READY -> setStatus("")
-                    Player.STATE_BUFFERING -> setStatus("Cargando...")
+                    Player.STATE_READY -> ocultarEstado()
+                    Player.STATE_BUFFERING -> { /* silencioso: es normal */ }
+                    Player.STATE_IDLE -> mostrarEstado("Conectando...")
                 }
             }
-
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e("CamaraViewer", "Error de reproducción: ${error.message}")
-                setStatus("Reconectando...")
-                scheduleReconnect()
-            }
         })
+
+        binding.playerView.player = exo
+        exo.prepare()
+        player = exo
+
+        // Reconstruir el efecto sobre la nueva sesion
+        loudness?.release()
+        loudness = null
+        aplicarBoost()
 
         lastCheckedPosition = -1L
         stalledChecks = 0
@@ -131,48 +182,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkStreamHealth() {
         val p = player ?: return
-        val playbackState = p.playbackState
-        if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
-            Log.w("CamaraViewer", "Estado inválido detectado ($playbackState), reiniciando reproductor")
-            scheduleReconnect()
-            return
-        }
-        val currentPosition = p.currentPosition
-        if (playbackState == Player.STATE_READY && p.playWhenReady) {
-            if (currentPosition == lastCheckedPosition) {
-                stalledChecks++
-                if (stalledChecks >= MAX_STALLED_CHECKS_BEFORE_RESTART) {
-                    setStatus("Reconectando...")
-                    scheduleReconnect()
-                    return
-                }
-            } else {
-                stalledChecks = 0
+        val pos = p.currentPosition
+
+        if (p.playbackState == Player.STATE_READY && pos == lastCheckedPosition) {
+            stalledChecks++
+            Log.w(TAG, "Stream congelado ($stalledChecks)")
+            if (stalledChecks >= MAX_STALLED_CHECKS_BEFORE_RESTART) {
+                mostrarEstado("Reconectando...")
+                initializePlayer()
             }
+        } else {
+            stalledChecks = 0
         }
-        lastCheckedPosition = currentPosition
+        lastCheckedPosition = pos
     }
 
-    private fun scheduleReconnect() {
-        releasePlayer()
-        mainHandler.postDelayed({ startPlayer() }, RECONNECT_DELAY_MS)
+    private fun mostrarEstado(txt: String) {
+        binding.txtEstado.text = txt
+        binding.txtEstado.visibility = View.VISIBLE
     }
 
-    private fun setStatus(text: String) {
-        binding.statusText.text = text
-        binding.statusText.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
-    }
-
-    private fun startWatchdog() {
-        if (!watchdogRunning) {
-            watchdogRunning = true
-            mainHandler.postDelayed(watchdogRunnable, CHECK_INTERVAL_MS)
-        }
-    }
-
-    private fun stopWatchdog() {
-        watchdogRunning = false
-        mainHandler.removeCallbacks(watchdogRunnable)
+    private fun ocultarEstado() {
+        binding.txtEstado.visibility = View.GONE
     }
 
     private fun releasePlayer() {
@@ -180,28 +211,25 @@ class MainActivity : AppCompatActivity() {
         player = null
     }
 
-    // --- Ciclo de vida: se detiene por completo al salir de pantalla ---
-    // Esto cubre tanto el botón "atrás" como el botón "home" o cambiar de app:
-    // en cualquier caso, se libera el reproductor y deja de consumir datos/audio.
-
     override fun onStart() {
         super.onStart()
-        setVolumeToMax()
-        startPlayer()
-        startWatchdog()
+        initializePlayer()
+        mainHandler.postDelayed(watchdogRunnable, CHECK_INTERVAL_MS)
     }
 
     override fun onStop() {
         super.onStop()
-        stopWatchdog()
+        mainHandler.removeCallbacks(watchdogRunnable)
         releasePlayer()
     }
 
-    override fun onBackPressed() {
-        // Libera todo explícitamente y cierra la app por completo,
-        // sin dejarla viva en segundo plano ni en la lista de recientes.
-        stopWatchdog()
-        releasePlayer()
-        finishAndRemoveTask()
+    override fun onDestroy() {
+        super.onDestroy()
+        loudness?.release()
+        loudness = null
+    }
+
+    companion object {
+        private const val TAG = "CamaraViewer"
     }
 }
