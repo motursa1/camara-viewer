@@ -1,8 +1,6 @@
 package com.alanleiva.camaraviewer
 
-import android.content.Context
-import android.media.AudioManager
-import android.media.audiofx.LoudnessEnhancer
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,50 +11,47 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowManager
-import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.common.util.Util
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.rtsp.RtspMediaSource
-import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import com.alanleiva.camaraviewer.databinding.ActivityMainBinding
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
 import kotlin.system.exitProcess
 
-@OptIn(UnstableApi::class)
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private var player: ExoPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // ===============================================================
-    //  TRANSPORTE RTSP
-    //  true = fuerza RTP sobre TCP (interleaved).
-    //  VLC negocia UDP y cae solo a TCP si no llega el RTP; Media3 no
-    //  lo hace de forma confiable y se queda en "Sin senal" para siempre.
-    //  Ponelo en false solo para experimentar.
-    // ===============================================================
-    private val FORZAR_TCP = true
+    private var libVlc: LibVLC? = null
+    private var mediaPlayer: MediaPlayer? = null
 
     // ===============================================================
-    //  AUDIO BOOST  (LoudnessEnhancer, ganancia en milibelios)
+    //  AUDIO BOOST (ecualizador nativo de VLC)
+    //  preAmp y las bandas van de -20 a +20 dB. El volumen de VLC
+    //  admite hasta 200 (%), que suma ~6 dB mas.
+    //  Formato de cada nivel: preAmp, ganancia de bandas, volumen, etiqueta
     // ===============================================================
-    private var loudness: LoudnessEnhancer? = null
-    private var audioSessionId: Int = 0
-    private val NIVELES_BOOST = intArrayOf(0, 1000, 2000, 3000)
-    private val ETIQUETAS = arrayOf("NORMAL", "+10 dB", "+20 dB", "MAX +30 dB")
+    private data class Nivel(
+        val preAmp: Float,
+        val bandas: Float,
+        val volumen: Int,
+        val etiqueta: String
+    )
+
+    private val NIVELES = listOf(
+        Nivel(0f, 0f, 100, "NORMAL"),
+        Nivel(10f, 0f, 100, "+10 dB"),
+        Nivel(20f, 6f, 150, "+26 dB"),
+        Nivel(20f, 20f, 200, "MAX")
+    )
     private var nivelActual = 0
 
     // ===============================================================
-    //  ZOOM POR PELLIZCO
+    //  ZOOM
     // ===============================================================
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var gestureDetector: GestureDetector
@@ -67,24 +62,16 @@ class MainActivity : AppCompatActivity() {
     private val ESCALA_MAX = 8f
 
     // ===============================================================
-    //  DETECCION DE CONGELAMIENTO
-    //  Se mide por frames REALMENTE renderizados, no por currentPosition
-    //  (que sigue avanzando aunque la imagen este congelada).
-    //  Se escribe desde el hilo de reproduccion -> @Volatile.
+    //  WATCHDOG
+    //  En VLC la senal de "esto sigue vivo" es el evento TimeChanged.
     // ===============================================================
     @Volatile
-    private var ultimoFrameMs = 0L
+    private var ultimoAvanceMs = 0L
     private var reconectando = false
 
-    // Se guarda la referencia porque para quitarlo hay que pasarla a
-    // clearVideoFrameMetadataListener (no acepta null).
-    private val frameListener = VideoFrameMetadataListener { _, _, _, _ ->
-        ultimoFrameMs = SystemClock.elapsedRealtime()
-    }
-
     private val WATCHDOG_INTERVAL_MS = 500L
-    private val UMBRAL_AVISO_MS = 1500L      // muestra "sin video"
-    private val UMBRAL_RECONECTAR_MS = 5000L // recrea el reproductor
+    private val UMBRAL_AVISO_MS = 1500L
+    private val UMBRAL_RECONECTAR_MS = 5000L
     private val RECONNECT_DELAY_MS = 500L
 
     private val watchdogRunnable = object : Runnable {
@@ -108,35 +95,28 @@ class MainActivity : AppCompatActivity() {
         configurarZoom()
     }
 
-    // ---------------------------------------------------------------
-    //  SALIDA FORZADA
-    //  Libera todo y mata el proceso: la app no queda en segundo plano
-    //  consumiendo datos del stream RTSP.
-    // ---------------------------------------------------------------
-    private fun salirForzado() {
-        mainHandler.removeCallbacksAndMessages(null)
-        releasePlayer()
-        loudness?.release()
-        loudness = null
-        finishAffinity()
-        android.os.Process.killProcess(android.os.Process.myPid())
-        exitProcess(0)
-    }
-
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) activarPantallaCompleta()
     }
 
-    // ---------------------------------------------------------------
-    //  PANTALLA COMPLETA (inmersiva)
-    // ---------------------------------------------------------------
     private fun activarPantallaCompleta() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val c = WindowInsetsControllerCompat(window, binding.root)
         c.hide(WindowInsetsCompat.Type.systemBars())
         c.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    // ---------------------------------------------------------------
+    //  SALIDA FORZADA
+    // ---------------------------------------------------------------
+    private fun salirForzado() {
+        mainHandler.removeCallbacksAndMessages(null)
+        liberarTodo()
+        finishAffinity()
+        android.os.Process.killProcess(android.os.Process.myPid())
+        exitProcess(0)
     }
 
     // ---------------------------------------------------------------
@@ -155,8 +135,7 @@ class MainActivity : AppCompatActivity() {
         gestureDetector = GestureDetector(this,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onScroll(
-                    e1: MotionEvent?, e2: MotionEvent,
-                    dx: Float, dy: Float
+                    e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float
                 ): Boolean {
                     if (escala > 1f) {
                         desplX -= dx
@@ -166,7 +145,6 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
 
-                // Doble toque = volver a 1x
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     escala = 1f
                     desplX = 0f
@@ -185,17 +163,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun aplicarTransformacion() {
-        val pv = binding.playerView
-        // Limitar el paneo para no arrastrar la imagen fuera de la pantalla
-        val maxX = (pv.width * (escala - 1f)) / 2f
-        val maxY = (pv.height * (escala - 1f)) / 2f
+        val vl = binding.videoLayout
+        val maxX = (vl.width * (escala - 1f)) / 2f
+        val maxY = (vl.height * (escala - 1f)) / 2f
         desplX = desplX.coerceIn(-maxX, maxX)
         desplY = desplY.coerceIn(-maxY, maxY)
 
-        pv.scaleX = escala
-        pv.scaleY = escala
-        pv.translationX = desplX
-        pv.translationY = desplY
+        vl.scaleX = escala
+        vl.scaleY = escala
+        vl.translationX = desplX
+        vl.translationY = desplY
 
         if (escala > 1.02f) {
             binding.txtZoom.text = String.format("%.1fx", escala)
@@ -206,39 +183,31 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------------
-    //  AUDIO BOOST
+    //  BOOST
     // ---------------------------------------------------------------
     private fun ciclarBoost() {
-        nivelActual = (nivelActual + 1) % NIVELES_BOOST.size
+        nivelActual = (nivelActual + 1) % NIVELES.size
         aplicarBoost()
-        binding.btnBoost.text = ETIQUETAS[nivelActual]
-        if (nivelActual > 0) subirVolumenSistemaAlMaximo()
+        binding.btnBoost.text = NIVELES[nivelActual].etiqueta
     }
 
     private fun aplicarBoost() {
-        val gananciaMb = NIVELES_BOOST[nivelActual]
+        val mp = mediaPlayer ?: return
+        val n = NIVELES[nivelActual]
         try {
-            if (loudness == null && audioSessionId != 0) {
-                loudness = LoudnessEnhancer(audioSessionId)
+            if (nivelActual == 0) {
+                mp.setEqualizer(null)
+            } else {
+                val eq = MediaPlayer.Equalizer.create()
+                eq.preAmp = n.preAmp
+                for (i in 0 until MediaPlayer.Equalizer.getBandCount()) {
+                    eq.setAmp(i, n.bandas)
+                }
+                mp.setEqualizer(eq)
             }
-            loudness?.let {
-                it.setTargetGain(gananciaMb)
-                it.enabled = gananciaMb > 0
-            }
+            mp.volume = n.volumen
         } catch (e: Exception) {
             Log.e(TAG, "No se pudo aplicar boost: ${e.message}")
-        }
-    }
-
-    private fun subirVolumenSistemaAlMaximo() {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.setStreamVolume(
-                AudioManager.STREAM_MUSIC,
-                am.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "No se pudo subir volumen: ${e.message}")
         }
     }
 
@@ -256,72 +225,72 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializePlayer() {
-        releasePlayer()
+        liberarTodo()
         reconectando = false
-        ultimoFrameMs = 0L
+        ultimoAvanceMs = 0L
         mostrarEstado("Conectando...")
 
-        // ---- BUFFER: EQUIVALENTE A LA CACHE DE RED DE VLC ----
-        // VLC usa ~1000ms por defecto y practicamente no se cae. Copiamos
-        // ese criterio: suficiente para cubrir un hueco del encoder, sin
-        // acumular atraso como pasaba con 4000ms.
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                1000,  // minBufferMs
-                3000,  // maxBufferMs
-                800,   // bufferForPlaybackMs
-                1000   // bufferForPlaybackAfterRebufferMs
-            )
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
+        // Opciones globales de VLC.
+        val opciones = arrayListOf(
+            "--rtsp-tcp",              // RTP interleaved sobre TCP
+            "--network-caching=1000",  // cache de red: el default de VLC
+            "--clock-jitter=0",        // no intentar corregir jitter de reloj
+            "--clock-synchro=0",
+            "--drop-late-frames",      // preferir tirar frames a acumular atraso
+            "--skip-frames",
+            "--no-audio-time-stretch",
+            "--avcodec-fast"
+        )
 
-        if (audioSessionId == 0) {
-            audioSessionId = Util.generateAudioSessionIdV21(this)
-        }
+        val vlc = LibVLC(this, opciones)
+        val mp = MediaPlayer(vlc)
 
-        val mediaSource = RtspMediaSource.Factory()
-            .setForceUseRtpTcp(FORZAR_TCP)
-            .setTimeoutMs(8000)
-            .createMediaSource(MediaItem.fromUri(buildRtspUrl()))
+        // textureView = true: se renderiza sobre un TextureView, que si
+        // acepta transformaciones de matriz. Con SurfaceView el zoom
+        // por pellizco no se comporta bien.
+        mp.attachViews(binding.videoLayout, null, false, true)
 
-        val exo = ExoPlayer.Builder(this)
-            .setLoadControl(loadControl)
-            .build()
+        val media = Media(vlc, Uri.parse(buildRtspUrl()))
+        media.setHWDecoderEnabled(true, false)
+        media.addOption(":network-caching=1000")
+        media.addOption(":rtsp-tcp")
+        media.addOption(":clock-jitter=0")
+        media.addOption(":clock-synchro=0")
+        mp.media = media
+        media.release()
 
-        exo.setAudioSessionId(audioSessionId)
-        exo.setMediaSource(mediaSource)
-        exo.playWhenReady = true
-        exo.volume = 1.0f
-
-        // Marca de tiempo de cada frame que el decodificador entrega a
-        // pantalla. Es la unica senal confiable de "la imagen esta viva".
-        exo.setVideoFrameMetadataListener(frameListener)
-
-        exo.addListener(object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "Error: ${error.errorCodeName}", error)
-                // El codigo se muestra en pantalla: sirve para distinguir
-                // un fallo de SDP/transporte de un timeout de red.
-                programarReconexion("Error: ${error.errorCodeName}")
-            }
-
-            override fun onPlaybackStateChanged(state: Int) {
-                when (state) {
-                    Player.STATE_IDLE -> mostrarEstado("Conectando...")
-                    Player.STATE_BUFFERING -> mostrarEstado("Sin senal...")
-                    Player.STATE_READY -> { /* el watchdog decide si ocultar */ }
-                    Player.STATE_ENDED -> programarReconexion("Stream terminado...")
+        mp.setEventListener { ev ->
+            when (ev.type) {
+                MediaPlayer.Event.TimeChanged -> {
+                    ultimoAvanceMs = SystemClock.elapsedRealtime()
+                    mainHandler.post { ocultarEstado() }
+                }
+                MediaPlayer.Event.Playing -> {
+                    ultimoAvanceMs = SystemClock.elapsedRealtime()
+                    mainHandler.post { ocultarEstado() }
+                }
+                MediaPlayer.Event.Buffering -> {
+                    val pct = ev.buffering
+                    if (pct >= 100f) {
+                        ultimoAvanceMs = SystemClock.elapsedRealtime()
+                    } else {
+                        mainHandler.post { mostrarEstado("Sin senal... ${pct.toInt()}%") }
+                    }
+                }
+                MediaPlayer.Event.EncounteredError -> {
+                    mainHandler.post { programarReconexion("Error de reproduccion") }
+                }
+                MediaPlayer.Event.EndReached -> {
+                    mainHandler.post { programarReconexion("Stream terminado") }
                 }
             }
-        })
+        }
 
-        binding.playerView.player = exo
-        exo.prepare()
-        player = exo
+        libVlc = vlc
+        mediaPlayer = mp
 
-        loudness?.release()
-        loudness = null
         aplicarBoost()
+        mp.play()
     }
 
     private fun programarReconexion(msg: String) {
@@ -332,14 +301,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun revisarSalud() {
-        val p = player ?: return
         if (reconectando) return
+        if (ultimoAvanceMs == 0L) return
 
-        // Aun no llega el primer frame: el listener del estado ya avisa.
-        if (ultimoFrameMs == 0L) return
-
-        val dt = SystemClock.elapsedRealtime() - ultimoFrameMs
-
+        val dt = SystemClock.elapsedRealtime() - ultimoAvanceMs
         when {
             dt > UMBRAL_RECONECTAR_MS -> {
                 Log.w(TAG, "Congelado ${dt}ms -> reconectando")
@@ -347,9 +312,6 @@ class MainActivity : AppCompatActivity() {
             }
             dt > UMBRAL_AVISO_MS -> {
                 mostrarEstado("Sin video (${dt / 1000}s)")
-            }
-            p.playbackState == Player.STATE_READY -> {
-                ocultarEstado()
             }
         }
     }
@@ -363,10 +325,16 @@ class MainActivity : AppCompatActivity() {
         binding.txtEstado.visibility = View.GONE
     }
 
-    private fun releasePlayer() {
-        player?.clearVideoFrameMetadataListener(frameListener)
-        player?.release()
-        player = null
+    private fun liberarTodo() {
+        mediaPlayer?.let {
+            it.setEventListener(null)
+            it.stop()
+            it.detachViews()
+            it.release()
+        }
+        mediaPlayer = null
+        libVlc?.release()
+        libVlc = null
     }
 
     override fun onStart() {
@@ -378,19 +346,12 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         mainHandler.removeCallbacksAndMessages(null)
-        releasePlayer()
+        liberarTodo()
     }
 
-    // El boton "atras" tambien cierra del todo: nada de segundo plano.
     @Deprecated("Compatibilidad con APIs anteriores")
     override fun onBackPressed() {
         salirForzado()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        loudness?.release()
-        loudness = null
     }
 
     companion object {
