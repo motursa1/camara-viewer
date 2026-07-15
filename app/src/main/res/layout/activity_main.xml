@@ -24,7 +24,7 @@
 
     </FrameLayout>
 
-    <!-- Leyenda pequena ARRIBA: conectando / reconectando / congelado -->
+    <!-- Leyenda pequena ARRIBA -->
     <TextView
         android:id="@+id/txtEstado"
         android:layout_width="wrap_content"
@@ -41,7 +41,7 @@
         android:textSize="13sp"
         android:visibility="gone" />
 
-    <!-- Indicador de zoom: aparece solo mientras hay zoom activo -->
+    <!-- Indicador de zoom -->
     <TextView
         android:id="@+id/txtZoom"
         android:layout_width="wrap_content"
@@ -56,6 +56,20 @@
         android:textColor="#FFFFFF"
         android:textSize="13sp"
         android:visibility="gone" />
+
+    <Button
+        android:id="@+id/btnSalir"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="20dp"
+        android:background="#CCC62828"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="SALIR"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
     <Button
         android:id="@+id/btnBoost"
