@@ -1,31 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <androidx.media3.ui.PlayerView
-        android:id="@+id/playerView"
+    <!-- Contenedor que recibe los gestos. NO se escala: solo el PlayerView
+         de adentro se escala. Si escalaramos este, las coordenadas del
+         tacto se transformarian y el pellizco se volveria erratico. -->
+    <FrameLayout
+        android:id="@+id/zoomContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:use_controller="false"
-        app:resize_mode="fit" />
+        android:clipChildren="true">
 
-    <!-- Estado del stream (solo visible cuando reconecta) -->
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/playerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            app:use_controller="false"
+            app:resize_mode="fit" />
+
+    </FrameLayout>
+
+    <!-- Leyenda pequena ARRIBA: conectando / reconectando / congelado -->
     <TextView
         android:id="@+id/txtEstado"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:background="#AA000000"
-        android:padding="16dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="12dp"
+        android:background="#CC000000"
+        android:paddingStart="14dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="6dp"
         android:text="Conectando..."
         android:textColor="#FFFFFF"
-        android:textSize="18sp"
+        android:textSize="13sp"
         android:visibility="gone" />
 
-    <!-- BOTON BOOST: cicla NORMAL -> +10 dB -> +20 dB -> +30 dB -> NORMAL -->
+    <!-- Indicador de zoom: aparece solo mientras hay zoom activo -->
+    <TextView
+        android:id="@+id/txtZoom"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:background="#CC000000"
+        android:paddingStart="10dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="4dp"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
     <Button
         android:id="@+id/btnBoost"
         android:layout_width="wrap_content"
@@ -35,7 +66,7 @@
         android:background="#CC1E88E5"
         android:paddingStart="24dp"
         android:paddingEnd="24dp"
-        android:text="🔊 NORMAL"
+        android:text="NORMAL"
         android:textColor="#FFFFFF"
         android:textSize="16sp"
         android:textStyle="bold" />
