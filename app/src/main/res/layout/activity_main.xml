@@ -1,30 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Contenedor que recibe los gestos. NO se escala: solo el PlayerView
-         de adentro se escala. Si escalaramos este, las coordenadas del
-         tacto se transformarian y el pellizco se volveria erratico. -->
+    <!-- Contenedor de gestos: NO se escala. Solo se escala el
+         VLCVideoLayout de adentro. Si escalaramos este, las coordenadas
+         del tacto se transformarian y el pellizco seria erratico. -->
     <FrameLayout
         android:id="@+id/zoomContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:clipChildren="true">
 
-        <androidx.media3.ui.PlayerView
-            android:id="@+id/playerView"
+        <org.videolan.libvlc.util.VLCVideoLayout
+            android:id="@+id/videoLayout"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            app:use_controller="false"
-            app:resize_mode="fit" />
+            android:layout_height="match_parent" />
 
     </FrameLayout>
 
-    <!-- Leyenda pequena ARRIBA -->
     <TextView
         android:id="@+id/txtEstado"
         android:layout_width="wrap_content"
@@ -41,7 +37,6 @@
         android:textSize="13sp"
         android:visibility="gone" />
 
-    <!-- Indicador de zoom -->
     <TextView
         android:id="@+id/txtZoom"
         android:layout_width="wrap_content"
