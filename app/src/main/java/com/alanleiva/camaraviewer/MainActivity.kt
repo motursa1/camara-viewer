@@ -28,6 +28,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import com.alanleiva.camaraviewer.databinding.ActivityMainBinding
+import kotlin.system.exitProcess
 
 @OptIn(UnstableApi::class)
 class MainActivity : AppCompatActivity() {
@@ -81,10 +82,10 @@ class MainActivity : AppCompatActivity() {
         ultimoFrameMs = SystemClock.elapsedRealtime()
     }
 
-    private val WATCHDOG_INTERVAL_MS = 1000L
-    private val UMBRAL_AVISO_MS = 2500L      // muestra "sin video"
-    private val UMBRAL_RECONECTAR_MS = 8000L // recrea el reproductor
-    private val RECONNECT_DELAY_MS = 2500L
+    private val WATCHDOG_INTERVAL_MS = 500L
+    private val UMBRAL_AVISO_MS = 1200L      // muestra "sin video"
+    private val UMBRAL_RECONECTAR_MS = 3000L // recrea el reproductor
+    private val RECONNECT_DELAY_MS = 300L    // practicamente inmediato
 
     private val watchdogRunnable = object : Runnable {
         override fun run() {
@@ -103,7 +104,23 @@ class MainActivity : AppCompatActivity() {
         activarPantallaCompleta()
 
         binding.btnBoost.setOnClickListener { ciclarBoost() }
+        binding.btnSalir.setOnClickListener { salirForzado() }
         configurarZoom()
+    }
+
+    // ---------------------------------------------------------------
+    //  SALIDA FORZADA
+    //  Libera todo y mata el proceso: la app no queda en segundo plano
+    //  consumiendo datos del stream RTSP.
+    // ---------------------------------------------------------------
+    private fun salirForzado() {
+        mainHandler.removeCallbacksAndMessages(null)
+        releasePlayer()
+        loudness?.release()
+        loudness = null
+        finishAffinity()
+        android.os.Process.killProcess(android.os.Process.myPid())
+        exitProcess(0)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -244,8 +261,17 @@ class MainActivity : AppCompatActivity() {
         ultimoFrameMs = 0L
         mostrarEstado("Conectando...")
 
+        // ---- BUFFER MINIMO: TIEMPO REAL ----
+        // No queremos reserva. Si la camara se atora, preferimos ver el
+        // hueco y reconectar de una, en vez de acumular atraso y soltarlo
+        // despues. bufferForPlayback = 200ms: arranca casi al instante.
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(4000, 12000, 2000, 3000)
+            .setBufferDurationsMs(
+                500,   // minBufferMs
+                1500,  // maxBufferMs
+                200,   // bufferForPlaybackMs
+                200    // bufferForPlaybackAfterRebufferMs
+            )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
@@ -280,7 +306,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_IDLE -> mostrarEstado("Conectando...")
-                    Player.STATE_BUFFERING -> mostrarEstado("Almacenando...")
+                    Player.STATE_BUFFERING -> mostrarEstado("Sin senal...")
                     Player.STATE_READY -> { /* el watchdog decide si ocultar */ }
                     Player.STATE_ENDED -> programarReconexion("Stream terminado...")
                 }
@@ -351,6 +377,12 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         mainHandler.removeCallbacksAndMessages(null)
         releasePlayer()
+    }
+
+    // El boton "atras" tambien cierra del todo: nada de segundo plano.
+    @Deprecated("Compatibilidad con APIs anteriores")
+    override fun onBackPressed() {
+        salirForzado()
     }
 
     override fun onDestroy() {
