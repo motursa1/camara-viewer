@@ -39,12 +39,12 @@ class MainActivity : AppCompatActivity() {
 
     // ===============================================================
     //  TRANSPORTE RTSP
-    //  false = intenta UDP primero (mejor en LAN, sin bloqueo de cabeza
-    //          de linea) y Media3 cae solo a TCP si UDP falla.
-    //  true  = fuerza TCP siempre (ponelo en true si por Tailscale
-    //          no levanta el stream).
+    //  true = fuerza RTP sobre TCP (interleaved).
+    //  VLC negocia UDP y cae solo a TCP si no llega el RTP; Media3 no
+    //  lo hace de forma confiable y se queda en "Sin senal" para siempre.
+    //  Ponelo en false solo para experimentar.
     // ===============================================================
-    private val FORZAR_TCP = false
+    private val FORZAR_TCP = true
 
     // ===============================================================
     //  AUDIO BOOST  (LoudnessEnhancer, ganancia en milibelios)
@@ -83,9 +83,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val WATCHDOG_INTERVAL_MS = 500L
-    private val UMBRAL_AVISO_MS = 1200L      // muestra "sin video"
-    private val UMBRAL_RECONECTAR_MS = 3000L // recrea el reproductor
-    private val RECONNECT_DELAY_MS = 300L    // practicamente inmediato
+    private val UMBRAL_AVISO_MS = 1500L      // muestra "sin video"
+    private val UMBRAL_RECONECTAR_MS = 5000L // recrea el reproductor
+    private val RECONNECT_DELAY_MS = 500L
 
     private val watchdogRunnable = object : Runnable {
         override fun run() {
@@ -261,16 +261,16 @@ class MainActivity : AppCompatActivity() {
         ultimoFrameMs = 0L
         mostrarEstado("Conectando...")
 
-        // ---- BUFFER MINIMO: TIEMPO REAL ----
-        // No queremos reserva. Si la camara se atora, preferimos ver el
-        // hueco y reconectar de una, en vez de acumular atraso y soltarlo
-        // despues. bufferForPlayback = 200ms: arranca casi al instante.
+        // ---- BUFFER: EQUIVALENTE A LA CACHE DE RED DE VLC ----
+        // VLC usa ~1000ms por defecto y practicamente no se cae. Copiamos
+        // ese criterio: suficiente para cubrir un hueco del encoder, sin
+        // acumular atraso como pasaba con 4000ms.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                500,   // minBufferMs
-                1500,  // maxBufferMs
-                200,   // bufferForPlaybackMs
-                200    // bufferForPlaybackAfterRebufferMs
+                1000,  // minBufferMs
+                3000,  // maxBufferMs
+                800,   // bufferForPlaybackMs
+                1000   // bufferForPlaybackAfterRebufferMs
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -299,8 +299,10 @@ class MainActivity : AppCompatActivity() {
 
         exo.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "Error: ${error.errorCodeName}")
-                programarReconexion("Reconectando...")
+                Log.e(TAG, "Error: ${error.errorCodeName}", error)
+                // El codigo se muestra en pantalla: sirve para distinguir
+                // un fallo de SDP/transporte de un timeout de red.
+                programarReconexion("Error: ${error.errorCodeName}")
             }
 
             override fun onPlaybackStateChanged(state: Int) {
