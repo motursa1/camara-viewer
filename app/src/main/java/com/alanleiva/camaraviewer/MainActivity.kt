@@ -26,6 +26,7 @@ import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import com.alanleiva.camaraviewer.databinding.ActivityMainBinding
 
 @OptIn(UnstableApi::class)
@@ -73,6 +74,12 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var ultimoFrameMs = 0L
     private var reconectando = false
+
+    // Se guarda la referencia porque para quitarlo hay que pasarla a
+    // clearVideoFrameMetadataListener (no acepta null).
+    private val frameListener = VideoFrameMetadataListener { _, _, _, _ ->
+        ultimoFrameMs = SystemClock.elapsedRealtime()
+    }
 
     private val WATCHDOG_INTERVAL_MS = 1000L
     private val UMBRAL_AVISO_MS = 2500L      // muestra "sin video"
@@ -262,9 +269,7 @@ class MainActivity : AppCompatActivity() {
 
         // Marca de tiempo de cada frame que el decodificador entrega a
         // pantalla. Es la unica senal confiable de "la imagen esta viva".
-        exo.setVideoFrameMetadataListener { _, _, _, _ ->
-            ultimoFrameMs = SystemClock.elapsedRealtime()
-        }
+        exo.setVideoFrameMetadataListener(frameListener)
 
         exo.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
@@ -331,7 +336,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
-        player?.setVideoFrameMetadataListener(null)
+        player?.clearVideoFrameMetadataListener(frameListener)
         player?.release()
         player = null
     }
